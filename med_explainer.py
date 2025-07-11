@@ -1,71 +1,54 @@
-from transformers import pipeline
+# med_explainer.py (RxNorm API version)
+
 import requests
-from bs4 import BeautifulSoup
 import re
 
-# Load Hugging Face medical NER model
-try:
-    ner_pipeline = pipeline("ner", model="d4data/biomedical-ner-all", grouped_entities=True)
-except:
-    ner_pipeline = None  # fallback if load fails
-
-EXCLUSION_WORDS = {"doctor", "mg", "tablet", "capsule", "daily", "take", "breakfast", "dinner", "liver", "results", "dr", "crp", "monitor"}
+EXCLUSION_WORDS = {"doctor", "tablet", "capsule", "daily", "dr", "oral", "mg", "dose", "before", "after", "with", "without"}
 
 def extract_drug_names(text):
     """
-    Hybrid drug name extractor using biomedical NER with fallback to regex.
+    Extracts potential medication names using simple heuristics.
     """
     meds = set()
-
-    # Step 1: Try biomedical NER
-    if ner_pipeline:
-        try:
-            entities = ner_pipeline(text)
-            for ent in entities:
-                word = ent['word'].strip().lower()
-                if word not in EXCLUSION_WORDS and len(word) > 3 and word.isalpha():
+    lines = text.lower().splitlines()
+    for line in lines:
+        if any(k in line for k in ["take", "tablet", "mg", "capsule"]):
+            words = re.findall(r'\b[a-zA-Z]{4,}\b', line)
+            for word in words:
+                if word not in EXCLUSION_WORDS:
                     meds.add(word)
-        except:
-            pass
-
-    # Step 2: Fallback – regex + heuristics
-    if not meds:
-        lines = text.lower().splitlines()
-        for line in lines:
-            if any(k in line for k in ["take", "tablet", "mg", "capsule"]):
-                words = re.findall(r'\b[a-zA-Z]{5,}\b', line)
-                for word in words:
-                    if word not in EXCLUSION_WORDS:
-                        meds.add(word)
-
     return list(meds)
 
-def fetch_drug_info_from_drugs_com(drug_name):
+def fetch_drug_info_from_rxnorm(drug_name):
     """
-    Scrape basic info from Drugs.com
+    Fetches drug explanation using trusted RxNorm API.
     """
     try:
-        url = f"https://www.drugs.com/{drug_name.lower().replace(' ', '-')}.html"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code != 200:
+        # Step 1: Get RXCUI ID
+        rxcui_res = requests.get(
+            f"https://rxnav.nlm.nih.gov/REST/rxcui.json?name={drug_name}"
+        )
+        rxcui = rxcui_res.json().get("idGroup", {}).get("rxnormId", [None])[0]
+        if not rxcui:
             return None
 
-        soup = BeautifulSoup(res.text, "html.parser")
-        box = soup.find("div", class_="contentBox")
-        if not box:
-            return None
+        # Step 2: Get drug properties
+        props_res = requests.get(
+            f"https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/allProperties.json?prop=all"
+        )
+        props = props_res.json()
+        info = props.get("propConceptGroup", {}).get("propConcept", [])
+        summary = "\n".join(f"- {p['propName']}: {p['propValue']}" for p in info[:5])
+        return summary or "No detailed info available."
 
-        ps = box.find_all("p")
-        return "\n\n".join(p.get_text() for p in ps[:2])
-    except:
-        return None
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 def get_medication_info(text):
     """
-    Extracts drug names and fetches explanations.
+    Extracts drug names and fetches explanations from RxNorm API.
     """
     meds = extract_drug_names(text)
-    return {med: fetch_drug_info_from_drugs_com(med) or "No info found." for med in meds}
+    return {med: fetch_drug_info_from_rxnorm(med) or "No info found." for med in meds}
 
 
