@@ -1,7 +1,6 @@
+streamlit
 transformers
 torch
+PyMuPDF
 beautifulsoup4
 requests
-streamlit
-PyMuPDF
-
