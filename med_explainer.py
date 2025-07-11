@@ -1,51 +1,30 @@
 import requests
-import logging
-from bs4 import BeautifulSoup
+import time
 
-# Set up logging for missing or failed lookups
-logging.basicConfig(filename='drug_lookup.log', level=logging.INFO, format='%(asctime)s - %(message)s')
+OPENFDA_API_KEY = "hCWBxZf5AyNf60AiDYXBnQdtlxwDAtfeAgLCHvbJ"
 
-def query_rxnorm(drug):
+def get_medication_info(drug_name):
     try:
-        response = requests.get(
-            f'https://rxnav.nlm.nih.gov/REST/rxcui.json?name={drug}')
-        rxcui = response.json().get('idGroup', {}).get('rxnormId', [None])[0]
-        if rxcui:
-            desc = requests.get(
-                f'https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/properties.json')
-            return desc.json().get('properties', {}).get('synonym', 'No description available.')
-    except Exception as e:
-        logging.warning(f'RxNorm failed for {drug}: {e}')
-    return None
+        url = f"https://api.fda.gov/drug/label.json?search=openfda.generic_name:{drug_name}&limit=1&api_key={OPENFDA_API_KEY}"
+        retries = 3
+        for i in range(retries):
+            response = requests.get(url)
+            if response.status_code == 429:
+                time.sleep(2 ** i)  # exponential backoff
+                continue
+            elif response.status_code != 200:
+                return None, "query_openfda"
+            else:
+                break
 
-def query_openfda(drug):
-    try:
-        response = requests.get(
-            f'https://api.fda.gov/drug/label.json?search=openfda.brand_name:"{drug}"&limit=1')
-        data = response.json().get('results', [{}])[0]
-        return data.get('description', ['No description available.'])[0]
-    except Exception as e:
-        logging.warning(f'OpenFDA failed for {drug}: {e}')
-    return None
-
-def query_medlineplus(drug):
-    try:
-        url = f'https://medlineplus.gov/druginfo/meds/{drug.lower()[:3]}.html'
-        html = requests.get(url).text
-        soup = BeautifulSoup(html, 'html.parser')
-        desc_tag = soup.find('div', class_='section-body')
-        return desc_tag.text.strip() if desc_tag else None
-    except Exception as e:
-        logging.warning(f'MedlinePlus failed for {drug}: {e}')
-    return None
-
-def get_medication_info(drug):
-    sources = [query_rxnorm, query_openfda, query_medlineplus]
-    for source in sources:
-        info = source(drug)
-        if info:
-            return {"info": info, "confidence": f"Source: {source.__name__}"}
-    logging.info(f'Drug not found in any source: {drug}')
-    return {"info": "No information found.", "confidence": "None"}
+        data = response.json()
+        if "results" in data:
+            result = data["results"][0]
+            description = result.get("description") or result.get("indications_and_usage") or result.get("purpose") or ["No info found"]
+            return description[0], "query_openfda"
+        else:
+            return None, "query_openfda"
+    except Exception:
+        return None, "query_openfda"
 
 
