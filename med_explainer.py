@@ -1,46 +1,51 @@
-# med_explainer.py
 import requests
-import re
+import logging
+from bs4 import BeautifulSoup
 
-# Step 1: Extract drug names
-def extract_drug_names(text):
-    """
-    Extract likely medication names by pattern-matching capitalized words and removing noise.
-    """
-    common_noise = {
-        "doctor", "tablet", "capsule", "daily", "dr", "oral", "mg", "dose", "before",
-        "after", "with", "without", "take", "once", "twice", "taper", "morning", "meals",
-        "food", "evening", "bedtime", "follow", "monitor", "blood", "report", "review"
-    }
+# Set up logging for missing or failed lookups
+logging.basicConfig(filename='drug_lookup.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 
-    meds = set()
-    lines = text.splitlines()
-    for line in lines:
-        if any(k in line.lower() for k in ["take", "tablet", "mg", "capsule"]):
-            words = re.findall(r'\b[A-Z][a-zA-Z]{3,}\b', line)  # Words starting with capital
-            for word in words:
-                if word.lower() not in common_noise:
-                    meds.add(word)
-    return list(meds)
-
-# Step 2: Fetch info from RxNorm API
-def fetch_drug_info_from_rxnorm(drug_name):
+def query_rxnorm(drug):
     try:
-        rxcui_res = requests.get(f"https://rxnav.nlm.nih.gov/REST/rxcui.json?name={drug_name}")
-        rxcui = rxcui_res.json().get("idGroup", {}).get("rxnormId", [None])[0]
-        if not rxcui:
-            return None
-
-        props_res = requests.get(f"https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/allProperties.json?prop=all")
-        props = props_res.json()
-        info = props.get("propConceptGroup", {}).get("propConcept", [])
-        summary = "\n".join(f"- {p['propName']}: {p['propValue']}" for p in info[:5])
-        return summary or "No detailed info available."
+        response = requests.get(
+            f'https://rxnav.nlm.nih.gov/REST/rxcui.json?name={drug}')
+        rxcui = response.json().get('idGroup', {}).get('rxnormId', [None])[0]
+        if rxcui:
+            desc = requests.get(
+                f'https://rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/properties.json')
+            return desc.json().get('properties', {}).get('synonym', 'No description available.')
     except Exception as e:
-        return f"Error fetching from RxNorm: {str(e)}"
+        logging.warning(f'RxNorm failed for {drug}: {e}')
+    return None
 
-# Step 3: Complete pipeline
-def get_medication_info(text):
-    meds = extract_drug_names(text)
-    return {med: fetch_drug_info_from_rxnorm(med) or "No info found." for med in meds}
+def query_openfda(drug):
+    try:
+        response = requests.get(
+            f'https://api.fda.gov/drug/label.json?search=openfda.brand_name:"{drug}"&limit=1')
+        data = response.json().get('results', [{}])[0]
+        return data.get('description', ['No description available.'])[0]
+    except Exception as e:
+        logging.warning(f'OpenFDA failed for {drug}: {e}')
+    return None
+
+def query_medlineplus(drug):
+    try:
+        url = f'https://medlineplus.gov/druginfo/meds/{drug.lower()[:3]}.html'
+        html = requests.get(url).text
+        soup = BeautifulSoup(html, 'html.parser')
+        desc_tag = soup.find('div', class_='section-body')
+        return desc_tag.text.strip() if desc_tag else None
+    except Exception as e:
+        logging.warning(f'MedlinePlus failed for {drug}: {e}')
+    return None
+
+def get_medication_info(drug):
+    sources = [query_rxnorm, query_openfda, query_medlineplus]
+    for source in sources:
+        info = source(drug)
+        if info:
+            return {"info": info, "confidence": f"Source: {source.__name__}"}
+    logging.info(f'Drug not found in any source: {drug}')
+    return {"info": "No information found.", "confidence": "None"}
+
 
