@@ -1,22 +1,28 @@
 # med_explainer.py
 
-import spacy
+from transformers import pipeline
 import requests
 from bs4 import BeautifulSoup
 
-# Load NER model from SciSpacy
-nlp = spacy.load("en_ner_bc5cdr_md")
+# Load Hugging Face NER pipeline
+ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", grouped_entities=True)
 
 def extract_drug_names(text):
     """
-    Uses SciSpacy biomedical NER to extract drug names from text.
+    Uses Hugging Face NER to extract named entities, filtering for likely drug names.
     """
-    doc = nlp(text)
-    drugs = set()
-    for ent in doc.ents:
-        if ent.label_ == "CHEMICAL":
-            drugs.add(ent.text.lower())
-    return list(drugs)
+    entities = ner_pipeline(text)
+    drug_names = set()
+
+    for ent in entities:
+        word = ent['word'].strip()
+        label = ent['entity_group']
+        # Heuristic filter: keep only 'MISC' or 'ORG' or proper nouns likely to be drugs
+        if label in ["ORG", "MISC", "PER", "LOC"]:
+            if len(word) > 3 and word.lower() not in ['tablet', 'doctor', 'mg', 'dose', 'dr']:
+                drug_names.add(word.lower())
+
+    return list(drug_names)
 
 def fetch_drug_info_from_drugs_com(drug_name):
     """
@@ -28,11 +34,12 @@ def fetch_drug_info_from_drugs_com(drug_name):
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code != 200:
             return None
-        from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(res.text, "html.parser")
         box = soup.find("div", class_="contentBox")
         if not box:
             return None
+
         ps = box.find_all("p")
         return "\n\n".join(p.get_text() for p in ps[:2])
     except:
@@ -40,7 +47,8 @@ def fetch_drug_info_from_drugs_com(drug_name):
 
 def get_medication_info(text):
     """
-    Extracts drug names and fetches info for each.
+    Extracts drug names and fetches explanations.
     """
     meds = extract_drug_names(text)
     return {med: fetch_drug_info_from_drugs_com(med) or "No info found." for med in meds}
+
