@@ -1,28 +1,44 @@
-# med_explainer.py
-
 from transformers import pipeline
 import requests
 from bs4 import BeautifulSoup
+import re
 
-# Load Hugging Face NER pipeline
-ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", grouped_entities=True)
+# Load Hugging Face medical NER model
+try:
+    ner_pipeline = pipeline("ner", model="d4data/biomedical-ner-all", grouped_entities=True)
+except:
+    ner_pipeline = None  # fallback if load fails
+
+EXCLUSION_WORDS = {"doctor", "mg", "tablet", "capsule", "daily", "take", "breakfast", "dinner", "liver", "results", "dr", "crp", "monitor"}
 
 def extract_drug_names(text):
     """
-    Uses Hugging Face NER to extract named entities, filtering for likely drug names.
+    Hybrid drug name extractor using biomedical NER with fallback to regex.
     """
-    entities = ner_pipeline(text)
-    drug_names = set()
+    meds = set()
 
-    for ent in entities:
-        word = ent['word'].strip()
-        label = ent['entity_group']
-        # Heuristic filter: keep only 'MISC' or 'ORG' or proper nouns likely to be drugs
-        if label in ["ORG", "MISC", "PER", "LOC"]:
-            if len(word) > 3 and word.lower() not in ['tablet', 'doctor', 'mg', 'dose', 'dr']:
-                drug_names.add(word.lower())
+    # Step 1: Try biomedical NER
+    if ner_pipeline:
+        try:
+            entities = ner_pipeline(text)
+            for ent in entities:
+                word = ent['word'].strip().lower()
+                if word not in EXCLUSION_WORDS and len(word) > 3 and word.isalpha():
+                    meds.add(word)
+        except:
+            pass
 
-    return list(drug_names)
+    # Step 2: Fallback – regex + heuristics
+    if not meds:
+        lines = text.lower().splitlines()
+        for line in lines:
+            if any(k in line for k in ["take", "tablet", "mg", "capsule"]):
+                words = re.findall(r'\b[a-zA-Z]{5,}\b', line)
+                for word in words:
+                    if word not in EXCLUSION_WORDS:
+                        meds.add(word)
+
+    return list(meds)
 
 def fetch_drug_info_from_drugs_com(drug_name):
     """
@@ -51,4 +67,5 @@ def get_medication_info(text):
     """
     meds = extract_drug_names(text)
     return {med: fetch_drug_info_from_drugs_com(med) or "No info found." for med in meds}
+
 
