@@ -1,35 +1,42 @@
-import gradio as gr
-from transformers import pipeline
+# app.py
 
-# Load FLAN-T5 small model (lightweight and free-tier friendly)
-model = pipeline("text2text-generation", model="google/flan-t5-small")
+import streamlit as st
+from utils import extract_text_from_pdf
+from summarizer import simplify_text
+from med_explainer import get_medication_info
 
-def explain_medication(med_name, tone):
-    prompt = f"Explain the usage, dosage, and side effects of {med_name} in a {tone} tone. Keep it simple and clear for a patient. End with: 'This is not medical advice. Always consult a doctor.'"
-    result = model(prompt, max_new_tokens=256, do_sample=False)
-    return result[0]['generated_text']
+st.set_page_config(page_title="ClearDose", layout="wide")
+st.title("💊 ClearDose – Understand Your Prescription")
 
-def explain_test_result(test_info, tone):
-    prompt = f"Explain the meaning of this medical test result: {test_info}. Use a {tone} tone. Be clear and reassuring. End with: 'This is not medical advice. Always consult a doctor.'"
-    result = model(prompt, max_new_tokens=256, do_sample=False)
-    return result[0]['generated_text']
+# File upload or text input
+uploaded_file = st.file_uploader("Upload your medical report or prescription (PDF)", type=["pdf"])
+raw_text = st.text_area("Or paste the prescription text here")
 
-with gr.Blocks() as demo:
-    gr.Markdown("# 🩺 ClearDose - GenAI Medical Assistant")
-    gr.Markdown("Explain medications and lab test results in plain language.")
+if st.button("Process"):
+    with st.spinner("Extracting and summarizing..."):
+        # Step 1: Extract text
+        if uploaded_file:
+            text = extract_text_from_pdf(uploaded_file)
+        else:
+            text = raw_text
+        
+        if not text.strip():
+            st.warning("Please upload a file or enter some text.")
+        else:
+            # Step 2: Summarize text
+            summary = simplify_text(text)
 
-    with gr.Tab("💊 Medication Explainer"):
-        med_input = gr.Textbox(label="Enter medicine (e.g. 'Paracetamol 650mg')")
-        tone_input = gr.Radio(["simple", "professional", "empathetic"], label="Tone", value="simple")
-        med_button = gr.Button("Explain")
-        med_output = gr.Textbox(label="Explanation")
-        med_button.click(fn=explain_medication, inputs=[med_input, tone_input], outputs=med_output)
+            # Step 3: Get medication explanations
+            med_info = get_medication_info(text)
 
-    with gr.Tab("🧪 Test Result Explainer"):
-        test_input = gr.Textbox(label="Enter test result (e.g. 'HbA1c 8.3%')")
-        tone_input_2 = gr.Radio(["simple", "professional", "empathetic"], label="Tone", value="simple")
-        test_button = gr.Button("Explain")
-        test_output = gr.Textbox(label="Explanation")
-        test_button.click(fn=explain_test_result, inputs=[test_input, tone_input_2], outputs=test_output)
+            # Step 4: Display output
+            st.subheader("📝 Simplified Summary")
+            st.write(summary)
 
-demo.launch()
+            st.subheader("💊 Medication Explanations")
+            if med_info:
+                for med, info in med_info.items():
+                    st.markdown(f"**{med.capitalize()}**")
+                    st.markdown(info or "⚠️ No information found.")
+            else:
+                st.info("No medications detected in the text.")
