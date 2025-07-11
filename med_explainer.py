@@ -1,59 +1,46 @@
 # med_explainer.py
 
-import re
+import spacy
 import requests
 from bs4 import BeautifulSoup
 
-# A minimal list of common drugs to match against (expandable)
-COMMON_DRUGS = [
-    "paracetamol", "ibuprofen", "amoxicillin", "cetirizine", "metformin",
-    "atorvastatin", "azithromycin", "omeprazole", "dolo", "pantoprazole",
-    "diclofenac", "insulin", "levothyroxine", "sertraline", "alprazolam"
-]
+# Load NER model from SciSpacy
+nlp = spacy.load("en_ner_bc5cdr_md")
 
 def extract_drug_names(text):
     """
-    Very basic drug name extractor (can be replaced with NER later).
+    Uses SciSpacy biomedical NER to extract drug names from text.
     """
-    found = set()
-    for drug in COMMON_DRUGS:
-        pattern = rf"\b{re.escape(drug)}\b"
-        if re.search(pattern, text, re.IGNORECASE):
-            found.add(drug.lower())
-    return list(found)
+    doc = nlp(text)
+    drugs = set()
+    for ent in doc.ents:
+        if ent.label_ == "CHEMICAL":
+            drugs.add(ent.text.lower())
+    return list(drugs)
 
 def fetch_drug_info_from_drugs_com(drug_name):
     """
-    Fetch simplified drug info from Drugs.com.
+    Scrape basic info from Drugs.com
     """
     try:
-        url = f"https://www.drugs.com/{drug_name}.html"
+        url = f"https://www.drugs.com/{drug_name.lower().replace(' ', '-')}.html"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=10)
-
         if res.status_code != 200:
             return None
-
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(res.text, "html.parser")
-        info_div = soup.find("div", class_="contentBox")
-
-        if not info_div:
+        box = soup.find("div", class_="contentBox")
+        if not box:
             return None
-
-        paragraphs = info_div.find_all("p")
-        summary = "\n\n".join(p.get_text() for p in paragraphs[:2])
-        return summary.strip()
-
-    except Exception as e:
+        ps = box.find_all("p")
+        return "\n\n".join(p.get_text() for p in ps[:2])
+    except:
         return None
 
 def get_medication_info(text):
     """
-    Extracts drug names from text and fetches explanations.
+    Extracts drug names and fetches info for each.
     """
     meds = extract_drug_names(text)
-    med_info = {}
-    for med in meds:
-        info = fetch_drug_info_from_drugs_com(med)
-        med_info[med] = info or "Information not available."
-    return med_info
+    return {med: fetch_drug_info_from_drugs_com(med) or "No info found." for med in meds}
